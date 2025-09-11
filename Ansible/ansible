@@ -1,0 +1,91 @@
+---
+- name: webserver setup
+  hosts: webserver
+  become: yes
+  gather_facts: yes
+
+  vars:
+    src_d: ../docker
+    dest_d: /opt/docker/
+    packages:
+     - vim
+     - git
+     - curl
+     - nginx
+     - sshd
+    services:
+     - sshd
+     - nginx
+     - docker
+
+
+  tasks:
+    - name: install packages
+      package:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ packages }}"
+    
+    - name: start the service
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop: "{{ services }}"
+
+    - name: copy index file
+      ansible.builtin.copy:
+        src: "{{ src_d}}"
+        dest: "{{ dest_d}}"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: archive log files
+      archive:
+        path: /ibus/fetalink
+        dest: /ibus/logs/fetalink_bkup.tar.gz
+        format: gz
+    
+    - name: hardening task
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: restart ssh
+      
+  handlers: 
+      - name: restart ssh
+        service:
+          name: sshd
+          state: restarted
+        register: op
+
+
+- name: rolling updates
+  hosts: all
+  serial: 1
+  tasks:
+    - name: restart application
+      service:
+        name: sshd
+        state: restarted
+
+    - name: run custom script
+      command: bash /ibus/healthcheck.sh
+
+    - name: Run system updates (apt/yum)
+      package:
+        name: "*"
+        state: latest
+
+    - name: Print OS NAME
+      debug:
+        var: ansible_distribution
+    
+    - name: Start and enable NTP service on CentOS
+      systemd:
+        name: chronyd
+        state: started
+        enabled: yes
+      when: ansible_distribution == "CentOS"
