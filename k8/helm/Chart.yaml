@@ -1,0 +1,6 @@
+apiVersion: v2
+name: vprofile-helm
+description: Helm chart for VProfile application with MySQL, Memcached, RabbitMQ, and app deployment
+type: application
+version: 0.1.0
+appVersion: "1.0"

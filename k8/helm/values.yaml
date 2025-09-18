@@ -1,0 +1,33 @@
+mysql:
+  rootPassword: vprodbpass
+  database: accounts
+  user: guest
+  password: guestpass
+  service:
+    port: 3306
+
+memcached:
+  replicas: 1
+  service:
+    port: 11211
+
+rabbitmq:
+  replicas: 1
+  service:
+    port: 5672
+
+app:
+  image: your-app-image:latest
+  replicas: 2
+  service:
+    port: 8080
+
+ingress:
+  enabled: true
+  host: example.com
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
