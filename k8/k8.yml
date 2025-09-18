@@ -1,0 +1,276 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-backup
+data:
+  db_backup.sql: |
+    -- Initial dump (sample, replace with your full backup)
+    CREATE DATABASE IF NOT EXISTS accounts;
+    USE accounts;
+    CREATE TABLE role (id INT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(45));
+    INSERT INTO role VALUES (1,'ROLE_USER');
+    CREATE TABLE user (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      username VARCHAR(255),
+      userEmail VARCHAR(255),
+      password VARCHAR(255)
+    );
+    INSERT INTO user VALUES (7,'sandy','sandy@vp.com','sandy');
+    CREATE TABLE user_role (user_id INT, role_id INT, PRIMARY KEY(user_id, role_id));
+    INSERT INTO user_role VALUES (7,1);
+
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vprodb
+spec:
+  serviceName: "vprodb"
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vprodb
+  template:
+    metadata:
+      labels:
+        app: vprodb
+    spec:
+      initContainers:
+        - name: delete-lost
+          image: busybox
+          command: ["sh", "-c", "rm -rf /var/lib/mysql/lost+found"]
+          volumeMounts:
+            - name: vprodb-data
+              mountPath: /var/lib/mysql
+      containers:
+        - name: vprodb
+          image: sand/sda
+          ports:
+            - containerPort: 3306
+              name: vpro-port
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: db-pass
+            - name: MYSQL_REPL_USER
+              value: repl
+            - name: MYSQL_REPL_PASSWORD
+              value: repl
+            - name: MYSQL_DATABASE
+              value: accounts
+          resources:
+            requests:
+              cpu: "4"         # Request 4 CPU cores
+              memory: "12Gi"   # Request 12 GB memory
+            limits:
+              cpu: "4"         # Limit CPU to 4 cores
+              memory: "12Gi"   # Limit memory to 12 GB
+          volumeMounts:
+            - name: vprodb-data
+              mountPath: /var/lib/mysql
+            - name: db-backup
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: db-backup
+          configMap:
+            name: db-backup
+        - name: vprodb-data
+          persistentVolumeClaim:
+            claimName: db-pvc-claim
+
+
+----
+db-service.yml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprodb  # Same as in app.prop
+spec:
+  selector:
+    app: vprodb
+  type: ClusterIP
+  ports:
+    - port: 3306
+      targetPort: vprodb-port  # Named port defined in the Deployment
+      protocol: TCP
+
+
+================
+
+4.  we create deployment,service definition for memcached 
+memdp.yml
+
+apiVersion: apps/v1  # Specifies the version of the API for deployments
+kind: Deployment  # Defines the resource type as a deployment
+metadata:
+  name: vpromc  # Name of the deployment
+spec:
+  replicas: 1  # Number of pod replicas to run (1 in this case)
+  selector:
+    matchLabels:
+      app: vpromc  # Selector to match pods with the 'app: vpromc' label
+  template:
+    metadata:
+      labels:
+        app: vpromc  # Label for the pods created by this deployment
+    spec:
+      containers:
+        - name: vpromc  # Name of the container within the pod
+          image: memcached  # The Docker image used for this container
+          ports:
+            - name: vpromc-port  # Name of the exposed port (optional)
+              containerPort: 11211  # Port exposed by the container (default for Memcached)
+
+
+
+===
+mcservice.yml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vprocache01  # same as in app.prop
+spec:
+  selector:
+    app: vpromc  # Must match the pod label
+  type: ClusterIP
+  ports:
+    - port: 11211
+      targetPort: vpromc-port  # Matches the named port in the container
+      protocol: TCP
+
+
+=========
+
+rmqdp.yml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vproarmq
+  labels:
+    app: vproarmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vproarmq
+  template:
+    metadata:
+      labels:
+        app: vproarmq
+    spec:
+      containers:
+        - name: vproarmq
+          image: rabbitmq
+          ports:
+            - name: vproarmq-port
+              containerPort: 5672  # RabbitMQ AMQP port
+          env:
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: rmq-pass
+            - name: RABBITMQ_DEFAULT_USER
+              value: "guest"
+
+
+==
+
+rmq-service.yml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpromq01  # same as in app.prop
+spec:
+  selector:
+    app: vproarmq  # Matches deployment label
+  type: ClusterIP
+  ports:
+    - port: 5672
+      targetPort: vproarmq-port  # Matches the named port in the container
+      protocol: TCP
+===
+
+app-dp.yml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vproapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vproapp
+  template:
+    metadata:
+      labels:
+        app: vproapp
+    spec:
+      initContainers:
+        - name: check-vprodb
+          image: busybox
+          command: ['sh', '-c', 'until nc -zv vprodb 3306; do echo waiting for vprodb; sleep 2; done']
+        - name: check-vprocache01
+          image: busybox
+          command: ['sh', '-c', 'until nc -zv vprocache01 11211; do echo waiting for vprocache01; sleep 2; done']
+        - name: check-vpromq01
+          image: busybox
+          command: ['sh', '-c', 'until nc -zv vpromq01 5672; do echo waiting for vpromq01; sleep 2; done']
+      containers:
+        - name: vproapp
+          image: sansv/tomcat-app-image:v1
+          ports:
+            - name: vproapp-port
+              containerPort: 8080
+===
+app-svc.yml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: vproapp  # Same as used in application properties if needed
+spec:
+  selector:
+    app: vproapp  # Matches the label in your Deployment
+  type: ClusterIP  # Internal service (default)
+  ports:
+    - port: 8080  # Port exposed by the service
+      targetPort: vproapp-port  # Matches named port in the container
+      protocol: TCP
+
+
+===
+ ingress.yml
+ 
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vpro-ingress
+  labels:
+    name: vpro-ingress
+
+spec:
+  ingressClassName: nginx  # Specifies that this Ingress should be handled by the NGINX Ingress Controller
+  rules:
+    - host: reva.sandysanj.site
+      http:
+        paths:
+          - pathType: Prefix
+            path: /
+            backend:
+              service:
+                name: vproapp  # Ensure this matches the actual Service name
+                port:
+                  number: 8080
+
+
+=============
+
+ingress controller : kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.3/deploy/static/provider/aws/deploy.yaml
