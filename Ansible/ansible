@@ -1,77 +1,80 @@
 ---
-- name: webserver setup
+- name: Webserver setup
   hosts: webserver
   become: yes
   gather_facts: yes
 
   vars:
+    app_service: myapp
+    app_url: "http://localhost:8080/health"
     src_d: ../docker
     dest_d: /opt/docker/
     packages:
-     - vim
-     - git
-     - curl
-     - nginx
-     - sshd
+      - vim
+      - git
+      - curl
+      - nginx
+      - sshd
     services:
-     - sshd
-     - nginx
-     - docker
-
+      - sshd
+      - nginx
+      - docker
 
   tasks:
-    - name: install packages
+    - name: Install required packages
       package:
         name: "{{ item }}"
         state: present
       loop: "{{ packages }}"
-    
-    - name: start the service
+
+    - name: Start and enable required services
       service:
         name: "{{ item }}"
         state: started
         enabled: yes
       loop: "{{ services }}"
 
-    - name: copy index file
+    - name: Copy Docker configuration files
       ansible.builtin.copy:
-        src: "{{ src_d}}"
-        dest: "{{ dest_d}}"
+        src: "{{ src_d }}"
+        dest: "{{ dest_d }}"
         owner: root
         group: root
         mode: '0755'
 
-    - name: archive log files
+    - name: Archive log files
       archive:
         path: /ibus/fetalink
         dest: /ibus/logs/fetalink_bkup.tar.gz
         format: gz
-    
-    - name: hardening task
+
+    - name: Disable root SSH login (OS hardening)
       lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^PermitRootLogin'
         line: 'PermitRootLogin no'
       notify: restart ssh
-      
-  handlers: 
-      - name: restart ssh
-        service:
-          name: sshd
-          state: restarted
-        register: op
 
-
-- name: rolling updates
-  hosts: all
-  serial: 1
-  tasks:
-    - name: restart application
+  handlers:
+    - name: restart ssh
       service:
         name: sshd
         state: restarted
 
-    - name: run custom script
+
+# Second play – Rolling updates and maintenance
+- name: Rolling updates
+  hosts: all
+  become: yes
+  serial: 1
+
+  tasks:
+    - name: Restart SSH service
+      service:
+        name: sshd
+        state: restarted
+
+    - name: Run custom health script
       command: bash /ibus/healthcheck.sh
 
     - name: Run system updates (apt/yum)
@@ -79,10 +82,10 @@
         name: "*"
         state: latest
 
-    - name: Print OS NAME
+    - name: Print OS name
       debug:
         var: ansible_distribution
-    
+
     - name: Start and enable NTP service on CentOS
       systemd:
         name: chronyd
@@ -109,3 +112,29 @@
         hour: 2
         state: present
 
+    - name: Check application health endpoint
+      uri:
+        url: "{{ app_url }}"
+        status_code: 200
+        return_content: no
+      register: app_health
+      ignore_errors: yes
+
+    - name: Restart application if health check failed
+      when: app_health.status != 200
+      service:
+        name: "{{ app_service }}"
+        state: restarted
+
+    - name: Confirm application health after restart
+      uri:
+        url: "{{ app_url }}"
+        status_code: 200
+      register: verify_health
+      retries: 5
+      delay: 10
+      until: verify_health.status == 200
+
+    - name: Display application status
+      debug:
+        msg: "Application health check status: {{ verify_health.status }}"
