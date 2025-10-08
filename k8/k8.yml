@@ -131,28 +131,44 @@ spec:
 4.  we create deployment,service definition for memcached 
 memdp.yml
 
-apiVersion: apps/v1  # Specifies the version of the API for deployments
-kind: Deployment  # Defines the resource type as a deployment
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: vpromc  # Name of the deployment
+  name: vpromc
 spec:
-  replicas: 1  # Number of pod replicas to run (1 in this case)
+  replicas: 1
   selector:
     matchLabels:
-      app: vpromc  # Selector to match pods with the 'app: vpromc' label
+      app: vpromc
   template:
     metadata:
       labels:
-        app: vpromc  # Label for the pods created by this deployment
+        app: vpromc
     spec:
       containers:
-        - name: vpromc  # Name of the container within the pod
-          image: memcached  # The Docker image used for this container
+        - name: vpromc
+          image: memcached
           ports:
-            - name: vpromc-port  # Name of the exposed port (optional)
-              containerPort: 11211  # Port exposed by the container (default for Memcached)
-
-
+            - name: vpromc-port
+              containerPort: 11211
+          # ----------------------------
+          # Liveness probe
+          livenessProbe:
+            tcpSocket:
+              port: 11211         # Check if TCP port is open
+            initialDelaySeconds: 15  # Wait 15s before first check
+            periodSeconds: 10        # Check every 10s
+            timeoutSeconds: 2        # Timeout if no response in 2s
+            failureThreshold: 3      # Restart container after 3 failures
+          # ----------------------------
+          # Readiness probe
+          readinessProbe:
+            tcpSocket:
+              port: 11211         # Check if TCP port is open
+            initialDelaySeconds: 5   # Wait 5s before first check
+            periodSeconds: 5         # Check every 5s
+            timeoutSeconds: 2        # Timeout if no response in 2s
+            failureThreshold: 3      # Mark pod not ready after 3 failures
 
 ===
 mcservice.yml
